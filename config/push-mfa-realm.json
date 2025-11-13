@@ -1,0 +1,128 @@
+{
+  "realm": "push-mfa",
+  "enabled": true,
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "browserFlow": "browser-push-flow",
+  "clients": [
+    {
+      "clientId": "test-app",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "http://localhost:8080/*"
+      ],
+      "webOrigins": [
+        "+"
+      ]
+    },
+    {
+      "clientId": "push-device-client",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false,
+      "secret": "device-client-secret",
+      "authorizationServicesEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "test",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "User",
+      "email": "test-user@example.com",
+      "clientRoles": {
+        "account": [
+          "manage-account",
+          "manage-account-links"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "service-account-push-device-client",
+      "enabled": true,
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users"
+        ]
+      },
+      "serviceAccountClientId": "push-device-client"
+    }
+  ],
+  "requiredActions": [
+    {
+      "alias": "push-mfa-register",
+      "name": "Register Push MFA device",
+      "providerId": "push-mfa-register",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 100
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "browser-push-flow",
+      "description": "Browser flow with push MFA",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 0
+        },
+        {
+          "authenticator": "identity-provider-redirector",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 1
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "browser-push-forms",
+          "requirement": "ALTERNATIVE",
+          "priority": 2
+        }
+      ]
+    },
+    {
+      "alias": "browser-push-forms",
+      "description": "Forms with password and push MFA",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 0
+        },
+        {
+          "authenticator": "push-mfa-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 1
+        }
+      ]
+    }
+  ]
+}

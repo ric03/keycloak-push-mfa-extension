@@ -1,1 +1,161 @@
-# keycloak-push-mfa-poc
+# Keycloak Push MFA Extension
+
+## Introduction
+
+:warning: This is a proof-of-concept implementation intended for educational purposes only. Do not use in production environments.
+
+This project extends Keycloak with a push-style second factor that mimics passkey primitives. The mobile app never receives the real user identifier from Keycloak; instead, it works with a pseudonymous id that only the app can map back to the real user. Everything is implemented with standard Keycloak SPIs plus a small JAX-RS resource exposed under `/realms/<realm>/push-mfa`.
+
+- Build the provider: `mvn -DskipTests package`
+- Run Keycloak locally (imports realm + loads provider): `docker compose up --build keycloak`
+- Keycloak admin UI: <http://localhost:8080> (`admin` / `admin`)
+- Test realm: `push-mfa` with the user `test / test`
+
+## High Level Flow
+
+1. **Enrollment challenge (RequiredAction):** Keycloak renders a QR code that encodes the realm-signed `enrollmentToken` (in this demo it uses a custom scheme: `push-mfa-login-app://?token=<enrollmentToken>). The token is a JWT signed with the realm key and contains user id (`sub`), username, `enrollmentId`, and a Base64URL nonce.
+
+   ```json
+   {
+     "_comment": "enrollmentToken payload (realm -> device)",
+     "iss": "http://localhost:8080/realms/push-mfa",
+     "aud": "push-mfa",
+     "typ": "push-enroll-challenge",
+     "sub": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
+     "username": "test",
+     "realm": "push-mfa",
+     "enrollmentId": "b15ef7f2-494c-4f03-a9b4-5b7eb4a71caa",
+     "nonce": "JYlLk0d9h9zGN7kMd8n5Vw",
+     "exp": 1731403200,
+     "iat": 1731402900
+   }
+   ```
+
+2. **Device enrollment response:** The app verifies the token using the realm JWKS, generates its own key pair and `kid`, and posts a JWT back to Keycloak that echoes the nonce and enrollment id, embeds the JWK under `cnf.jwk`, and introduces a pseudonymous user id. The JWT header uses the device `kid`; the payload looks like this:
+
+   ```json
+   {
+     "_comment": "device enrollment payload (device -> realm)",
+     "enrollmentId": "b15ef7f2-494c-4f03-a9b4-5b7eb4a71caa",
+     "nonce": "JYlLk0d9h9zGN7kMd8n5Vw",
+     "sub": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
+     "deviceType": "ios",
+     "firebaseId": "mock-fcm-token",
+     "pseudonymousUserId": "device-alias-bf7a9f52",
+     "cnf": {
+       "jwk": {
+         "kty": "RSA",
+         "n": "uVvbx3-...",
+         "e": "AQAB",
+         "alg": "RS256",
+         "use": "sig",
+         "kid": "device-key-31c3"
+       }
+     },
+     "iat": 1731402910,
+     "exp": 1731403200
+   }
+   ```
+
+3. **Confirm token delivery:** Every login creates a fresh push challenge. Keycloak signs a `confirmToken` using the realm key and displays/logs it. This token is what would be sent via Firebase: it only contains the pseudonymous user id and the challenge id (`cid`), so the push provider learns nothing about the real user or that it is a login.
+
+   ```json
+   {
+     "_comment": "confirmToken payload (realm -> device via Firebase/FCM)",
+     "iss": "http://localhost:8080/realms/push-mfa",
+     "sub": "device-alias-bf7a9f52",
+     "typ": "1",
+     "ver": "1",
+     "cid": "1a6d6a0b-3385-4772-8eb8-0d2f4dbd25a4",
+     "iat": 1731402960,
+     "exp": 1731403260
+   }
+   ```
+
+4. **Login approval:** The device looks up the confirm token’s `sub`, resolves it to the real Keycloak user id in its secure storage, and signs a JWT (`loginToken`) with the same key pair from enrollment. The payload simply echoes the challenge id (`cid`) and the real `sub` (no nonce is needed because possession of the device key already proves authenticity, and `cid` is unguessable).
+
+   ```json
+   {
+     "_comment": "login approval payload (device -> realm)",
+     "cid": "1a6d6a0b-3385-4772-8eb8-0d2f4dbd25a4",
+     "sub": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
+     "exp": 1731403020
+   }
+   ```
+
+5. **Browser wait + polling:** The Keycloak login UI polls its own challenge store. Once the challenge is approved (or denied) the form resolves automatically. Polling `GET /login/pending` from the app is optional; the confirm token already carries the `cid`.
+
+## Custom Keycloak APIs
+
+All endpoints live under `/realms/push-mfa/push-mfa` and require a bearer token obtained by the device client (`push-device-client`) via client credentials.
+
+### Complete enrollment
+
+```
+POST /realms/push-mfa/push-mfa/enroll/complete
+Authorization: Bearer <device-service-token>
+Content-Type: application/json
+
+{
+  "token": "<device-signed enrollment JWT>",
+  "deviceLabel": "Demo Phone"
+}
+```
+
+Keycloak verifies the signature using `cnf.jwk`, persists the credential (JWK, algorithm, deviceType, firebaseId, pseudonymousUserId), and resolves the enrollment challenge.
+
+```json
+{
+  "status": "enrolled",
+  "credentialId": "e96f7db9-6d4e-4e98-8e8c-856f0a6ae590"
+}
+```
+
+### List pending login challenges
+
+```
+GET /realms/push-mfa/push-mfa/login/pending?userId=<keycloak-user-id>
+Authorization: Bearer <device-service-token>
+```
+
+```json
+{
+  "challenges": [
+    {
+      "userId": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
+      "cid": "1a6d6a0b-3385-4772-8eb8-0d2f4dbd25a4",
+      "expiresAt": "2025-11-14T13:16:12.902Z"
+    }
+  ]
+}
+```
+
+### Approve or deny a challenge
+
+```
+POST /realms/push-mfa/push-mfa/login/challenges/{cid}/respond
+Authorization: Bearer <device-service-token>
+Content-Type: application/json
+
+{
+  "userId": "<keycloak-user-id>",
+  "token": "<device-signed login JWT>",
+  "action": "approve"  // optional, defaults to approve. use "deny" to reject.
+}
+```
+
+On approval, Keycloak verifies the signature with the stored device JWK, ensures `cid` and `sub` match, marks the challenge as approved, and the browser flow continues. Deny marks the challenge as denied.
+
+```json
+{ "status": "approved" }
+```
+
+## App Implementation Notes
+
+- **Realm verification:** Enrollment starts when the app scans the QR code and reads `enrollmentToken`. Verify the JWT with the realm JWKS (`/realms/push-mfa/protocol/openid-connect/certs`) before trusting its contents.
+- **Device key material:** Generate a key pair per device, select a unique `kid`, and keep the private key in the device secure storage. Persist and exchange the public component exclusively as a JWK (the same document posted in `cnf.jwk`).
+- **State to store locally:** pseudonymous user id ↔ real Keycloak user id mapping, the device key pair, the `kid`, `deviceType`, `firebaseId`, and any metadata needed to post to Keycloak again.
+- **Confirm token handling:** When the confirm token arrives through Firebase (or when the user copies it from the waiting UI), decode the JWT, extract `cid` and `sub`, and either call `/login/pending` (optional) or immediately sign the login approval JWT and post it to `/login/challenges/{cid}/respond`.
+- **Error handling:** Enrollment and login requests return structured error responses (`400`, `403`, or `404`) when the JWTs are invalid, expired, or mismatched. Surface those errors to the user to re-trigger the flow if necessary.
+
+With these primitives an actual mobile app UI or automation can be layered on top without depending on helper shell scripts.
