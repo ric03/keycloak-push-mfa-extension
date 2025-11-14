@@ -138,9 +138,10 @@ public class PushMfaResource {
         String firebaseId = require(jsonText(payload, "firebaseId"), "firebaseId");
         String pseudonymousUserId = require(jsonText(payload, "pseudonymousUserId"), "pseudonymousUserId");
 
-        String label = request.deviceLabel() == null || request.deviceLabel().isBlank()
+        String labelClaim = jsonText(payload, "deviceLabel");
+        String label = labelClaim == null || labelClaim.isBlank()
             ? PushMfaConstants.USER_CREDENTIAL_DISPLAY_NAME
-            : request.deviceLabel();
+            : labelClaim;
 
         PushCredentialData data = new PushCredentialData(
             jwkNode.toString(),
@@ -194,16 +195,6 @@ public class PushMfaResource {
             throw new BadRequestException("Challenge is not for login");
         }
 
-        String action = Optional.ofNullable(request.action()).map(String::toLowerCase).orElse(PushMfaConstants.CHALLENGE_APPROVE);
-        if (PushMfaConstants.CHALLENGE_DENY.equals(action)) {
-            challengeStore.resolve(challengeId, PushChallengeStatus.DENIED);
-            return Response.ok(Map.of("status", "denied")).build();
-        }
-
-        if (!PushMfaConstants.CHALLENGE_APPROVE.equals(action)) {
-            throw new BadRequestException("Unsupported action: " + action);
-        }
-
         String deviceToken = require(request.token(), "token");
         TokenLogHelper.logJwt("login-device-token", deviceToken);
         UserModel user = getUser(challengeUserId);
@@ -226,6 +217,10 @@ public class PushMfaResource {
         } catch (Exception ex) {
             throw new BadRequestException("Unable to parse authentication token");
         }
+
+        String tokenAction = Optional.ofNullable(jsonText(payload, "action"))
+            .map(String::toLowerCase)
+            .orElse(PushMfaConstants.CHALLENGE_APPROVE);
 
         String challengeCredentialId = challenge.getCredentialId();
         CredentialModel credentialModel = challengeCredentialId == null
@@ -268,6 +263,15 @@ public class PushMfaResource {
         String tokenSubject = require(jsonText(payload, "sub"), "sub");
         if (!Objects.equals(tokenSubject, challengeUserId)) {
             throw new ForbiddenException("Authentication token subject mismatch");
+        }
+
+        if (PushMfaConstants.CHALLENGE_DENY.equals(tokenAction)) {
+            challengeStore.resolve(challengeId, PushChallengeStatus.DENIED);
+            return Response.ok(Map.of("status", "denied")).build();
+        }
+
+        if (!PushMfaConstants.CHALLENGE_APPROVE.equals(tokenAction)) {
+            throw new BadRequestException("Unsupported action: " + tokenAction);
         }
 
         challengeStore.resolve(challengeId, PushChallengeStatus.APPROVED);
@@ -401,8 +405,7 @@ public class PushMfaResource {
         }
     }
 
-    record EnrollmentCompleteRequest(@JsonProperty("token") String token,
-                                     @JsonProperty("deviceLabel") String deviceLabel) {
+    record EnrollmentCompleteRequest(@JsonProperty("token") String token) {
     }
 
     record LoginChallenge(@JsonProperty("userId") String userId,
@@ -411,7 +414,6 @@ public class PushMfaResource {
                           @JsonProperty("clientId") String clientId) {
     }
 
-    record ChallengeRespondRequest(@JsonProperty("token") String token,
-                                   @JsonProperty("action") String action) {
+    record ChallengeRespondRequest(@JsonProperty("token") String token) {
     }
 }

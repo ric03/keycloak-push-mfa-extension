@@ -8,6 +8,7 @@ Usage: scripts/confirm-login.sh <confirm-token>
 Environment overrides:
   TOKEN_ENDPOINT           OIDC token endpoint (default: http://localhost:8080/realms/push-mfa/protocol/openid-connect/token)
   DEVICE_STATE_DIR         Directory storing device state from enroll.sh (default: scripts/device-state)
+  LOGIN_ACTION             Action encoded in the device token (approve or deny, default: approve)
 EOF
 }
 
@@ -107,11 +108,13 @@ curl -s -G \
   "$PENDING_URL" | jq
 
 EXPIRY=$(($(date +%s) + 120))
+LOGIN_ACTION=${LOGIN_ACTION:-approve}
 LOGIN_PAYLOAD=$(jq -n \
   --arg cid "$CHALLENGE_ID" \
   --arg sub "$USER_ID" \
   --arg exp "$EXPIRY" \
-  '{"cid": $cid, "sub": $sub, "exp": ($exp|tonumber)}')
+  --arg action "$LOGIN_ACTION" \
+  '{"cid": $cid, "sub": $sub, "exp": ($exp|tonumber), "action": $action}')
 
 LOGIN_HEADER_B64=$(printf '{"alg":"RS256","kid":"%s","typ":"JWT"}' "$KID" | b64urlencode)
 LOGIN_PAYLOAD_B64=$(printf '%s' "$LOGIN_PAYLOAD" | b64urlencode)
