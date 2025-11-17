@@ -88,6 +88,17 @@ This project extends Keycloak with a push-style second factor that mimics passke
    }
    ```
 
+   For endpoints such as `/login/pending`, `/device/firebase`, and `/device/rotate-key`, the device presents a lightweight **device assertion** in the `Authorization: Bearer` header. (Enrollment completion and login approval continue to use the specialized JWTs described above.) The device assertion payload is short-lived and binds the request to a physical device:
+
+   ```json
+   {
+     "_comment": "device assertion payload (header for REST endpoints using device assertions)",
+     "sub": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
+     "deviceId": "device-3d7a4e65-9bd6-4df3-9c7d-2b3e0ce9e1a5",
+     "exp": 1731402960
+   }
+   ```
+
 5. **Browser wait + polling:** The Keycloak login UI polls its own challenge store. Once the challenge is approved (or denied) the form resolves automatically. Polling `GET /login/pending` from the app is optional; the confirm token already carries the `cid`.
 
 > This PoC demonstrates both real-time strategies: the enrollment UI listens to server-sent events (SSE) emitted for its challenge, while the login approval screen continues to use classic polling so both patterns can be evaluated side-by-side.
@@ -170,6 +181,46 @@ Keycloak verifies the signature with the stored device JWK, ensures `cid`/`sub` 
 { "status": "approved" }
 ```
 
+### Update the Firebase registration
+
+```
+PUT /realms/push-mfa/push-mfa/device/firebase
+Authorization: Bearer <device-assertion JWT>
+Content-Type: application/json
+
+{
+  "firebaseId": "new-fcm-token"
+}
+```
+
+Keycloak authenticates the request with the current device key and replaces the stored Firebase/FCM identifier tied to that credential. The response body is `{ "status": "updated" }` (or `"unchanged"` if the value was already in sync).
+
+> Demo helper: `scripts/update-firebase.sh <pseudonymous-id> <new-firebase-id>`
+
+### Rotate the device key
+
+```
+PUT /realms/push-mfa/push-mfa/device/rotate-key
+Authorization: Bearer <device-assertion JWT>
+Content-Type: application/json
+
+{
+  "publicKeyJwk": {
+    "kty": "RSA",
+    "n": "....",
+    "e": "AQAB",
+    "alg": "RS256",
+    "use": "sig",
+    "kid": "device-key-rotated"
+  },
+  "algorithm": "RS256"
+}
+```
+
+The Authorization header must be signed with the *existing* device key. After validation, Keycloak swaps the stored JWK/algorithm (and updates the credential timestamp). The response is `{ "status": "rotated" }`. Future API calls must be signed with the newly-installed key.
+
+> Demo helper: `scripts/rotate-device-key.sh <pseudonymous-id>`
+
 ## App Implementation Notes
 
 - **Realm verification:** Enrollment starts when the app scans the QR code and reads `enrollmentToken`. Verify the JWT with the realm JWKS (`/realms/push-mfa/protocol/openid-connect/certs`) before trusting its contents.
@@ -178,7 +229,7 @@ Keycloak verifies the signature with the stored device JWK, ensures `cid`/`sub` 
 - **Confirm token handling:** When the confirm token arrives through Firebase (or when the user copies it from the waiting UI), decode the JWT, extract `cid` and `sub`, and either call `/login/pending` (optional) or immediately sign the login approval JWT and post it to `/login/challenges/{cid}/respond`.
 - **Pending challenge discovery:** Before calling `/login/pending`, mint a short-lived JWT with the device key that includes `sub`, `deviceId`, and `exp`, and send it as the Authorization header so Keycloak can scope the response to that physical device.
 - **Error handling:** Enrollment and login requests return structured error responses (`400`, `403`, or `404`) when the JWTs are invalid, expired, or mismatched. Surface those errors to the user to re-trigger the flow if necessary.
-- **Key rotation / Firebase changes:** Rotating the device key pair or updating the `firebaseId` would require dedicated Keycloak endpoints to update the stored credential; those flows are out of scope for this PoC, so the workaround is to delete the credential and re-enroll.
+- **Key rotation / Firebase changes:** Use the `/device/firebase` and `/device/rotate-key` endpoints (described above) to update the stored metadata while authenticating with the current device key. Rotation should generate a fresh key pair, send the public JWK + algorithm, and immediately start using the new key for every subsequent JWT.
 
 With these primitives an actual mobile app UI or automation can be layered on top without depending on helper shell scripts.
 
@@ -191,6 +242,7 @@ With these primitives an actual mobile app UI or automation can be layered on to
 - **Limited data exposure:** Confirm tokens carry only the pseudonymous user id and challenge id, preventing the push channel from learning the user’s identity or whether a login succeeded.
 - **Short-lived state:** Challenge lifetime equals every token’s `exp`, so an attacker has at most ~2 minutes to replay data even if transport is intercepted.
 - **Key continuity:** The stored `cnf.jwk` couples future approvals to the same hardware-backed key, giving Keycloak a stable signal that a response truly came from the enrolled device.
+- **Hardware-bound authentication:** Every REST call is authenticated with a JWT signed by that device’s private key, which is far more secure than distributing an easily reverse-engineered client secret inside the mobile app. Stealing the client binary is no longer enough; the attacker must compromise the device’s key material as well.
 
 ### Obligations for the mobile application
 

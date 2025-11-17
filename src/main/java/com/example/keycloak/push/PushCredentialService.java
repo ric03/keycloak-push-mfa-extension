@@ -35,6 +35,13 @@ public final class PushCredentialService {
         return PushCredentialUtils.fromJson(credentialModel.getCredentialData());
     }
 
+    public static void updateCredential(UserModel user,
+                                        CredentialModel credential,
+                                        PushCredentialData data) {
+        credential.setCredentialData(PushCredentialUtils.toJson(data));
+        user.credentialManager().updateStoredCredential(credential);
+    }
+
     public static CredentialModel getCredentialById(UserModel user, String credentialId) {
         if (credentialId == null || credentialId.isBlank()) {
             return null;
