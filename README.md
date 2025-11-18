@@ -2,9 +2,7 @@
 
 ## Introduction
 
-:warning: This is a proof-of-concept implementation intended for educational purposes only. Do not use in production environments.
-
-This project extends Keycloak with a push-style second factor that mimics passkey primitives. After initial enrollment, the mobile app never receives the real user identifier from Keycloak; instead, it works with a pseudonymous id that only the app can map back to the real user. Everything is implemented with standard Keycloak SPIs plus a small JAX-RS resource exposed under `/realms/<realm>/push-mfa`.
+:warning: This project extends Keycloak with a push-style second factor that mimics passkey primitives. After initial enrollment, the mobile app never receives the real user identifier from Keycloak; instead, it works with a pseudonymous id that only the app can map back to the real user. Everything is implemented with standard Keycloak SPIs plus a small JAX-RS resource exposed under `/realms/<realm>/push-mfa`.
 
 - Build the provider: `mvn -DskipTests package`
 - Run Keycloak locally (imports realm + loads provider): `docker compose up --build keycloak`
@@ -90,9 +88,7 @@ This project extends Keycloak with a push-style second factor that mimics passke
 
    See [DPoP Authentication](#dpop-authentication) for the proof format and how access tokens are obtained.
 
-5. **Browser wait + polling:** The Keycloak login UI polls its own challenge store. Once the challenge is approved (or denied) the form resolves automatically. Polling `GET /login/pending` from the app is optional; the confirm token already carries the `cid`.
-
-> This PoC demonstrates both real-time strategies: the enrollment UI listens to server-sent events (SSE) emitted for its challenge, while the login approval screen continues to use classic polling so both patterns can be evaluated side-by-side.
+5. **Browser wait (SSE):** The Keycloak login UI now opens a server-sent events (SSE) stream for the login challenge. Once the SSE status switches away from `PENDING`, the waiting form automatically submits and the flow proceeds. The legacy `GET /login/pending` endpoint is still available for scripts and debugging, but browsers no longer rely on polling.
 
 ### Enrollment SSE details
 
@@ -113,6 +109,24 @@ This project extends Keycloak with a push-style second factor that mimics passke
 - **Client behavior:** The enrollment page (`push-register.ftl`) spins up a single `EventSource` pointed at the `eventsUrl`. When a non-`PENDING` status arrives the stream is closed and the hidden `check` form is submitted, allowing Keycloak’s RequiredAction to complete without any manual refresh. If the connection drops (pod restart, network flap) the browser’s native EventSource automatically retries; the script only logs `error` events for visibility.
 
 - **No polling fallback:** Unlike earlier iterations the SSE client never schedules timer-based polling. If EventSource is missing (very old browsers) the script simply logs a warning, which is acceptable in this demo because enrollment is expected to run in modern browsers.
+
+### Login SSE details
+
+- **Endpoint:** `GET /realms/<realm>/push-mfa/login/challenges/{cid}/events?secret=<watchSecret>` streams the status for a login challenge. The authenticator generates a fresh `watchSecret` for every login, stores it with the challenge, and exposes the fully qualified SSE URL to the `push-wait.ftl` template via `pushChallengeWatchUrl`.
+
+- **Server loop:** `PushMfaResource#emitLoginChallengeEvents` mirrors the enrollment loop and emits JSON payloads such as:
+
+  ```json
+  {
+    "status": "PENDING | APPROVED | DENIED | EXPIRED | NOT_FOUND | FORBIDDEN | BAD_TYPE | INVALID | INTERRUPTED",
+    "challengeId": "8fb0bc35-3e9f-4a9e-b9c1-5bb0bd963044",
+    "expiresAt": "2025-11-17T10:24:11.446Z",
+    "resolvedAt": "2025-11-17T10:24:35.100Z",
+    "clientId": "account-console"
+  }
+  ```
+
+- **Client behavior:** The waiting login form starts an `EventSource` and listens for `status` events. As soon as the status changes away from `PENDING`, the stream is closed and the (already prepared) form posts back to Keycloak, resuming the authentication flow without additional HTTP polling. If SSE is unavailable or the connection fails repeatedly, the script falls back to a single delayed form submission so the classic polling logic still works as a safety net.
 
 ## DPoP Authentication
 
@@ -244,7 +258,7 @@ The `DPoP` header carries a short-lived JWT signed with the device key (see the 
     {
       "userId": "87fa1c21-1b1e-4af8-98b1-1df2e90d3c3d",
       "cid": "1a6d6a0b-3385-4772-8eb8-0d2f4dbd25a4",
-      "expiresAt": "2025-11-14T13:16:12.902Z",
+      "expiresAt": 1731402972,
       "clientId": "test-app"
     }
   ]
@@ -252,6 +266,8 @@ The `DPoP` header carries a short-lived JWT signed with the device key (see the 
 ```
 
 If the credential referenced by the device assertion does not own an outstanding challenge, the array is empty even if other devices for the same user are awaiting approval.
+
+`expiresAt` is expressed in Unix seconds (the same format used by JWT `exp` claims) so the device can reuse its existing JWT helpers for deadline calculations.
 
 ### Approve or deny a challenge
 
@@ -314,10 +330,22 @@ The DPoP proof must be signed with the *existing* device key. After validation, 
 
 > Demo helper: `scripts/rotate-device-key.sh <pseudonymous-id>`
 
+### Demo CLI scripts
+
+The repository includes thin shell wrappers that simulate a device:
+
+- `scripts/enroll.sh <enrollment-token>` decodes the QR payload, generates a key pair (RSA or EC), and completes enrollment.
+- `scripts/confirm-login.sh <confirm-token>` decodes the Firebase-style payload, lists pending challenges (for demo visibility), and approves/denies the challenge.
+- `scripts/update-firebase.sh <pseudonymous-id> <firebase-id>` updates the stored push registration.
+- `scripts/rotate-device-key.sh <pseudonymous-id>` rotates the device key material and immediately persists the new JWK/algorithm.
+
+All scripts source `scripts/common.sh`, which centralizes base64 helpers, compact-JWS signing, DPoP proof creation, and token acquisition. The helper expects `scripts/sign_jws.py` to exist (or `COMMON_SIGN_JWS` to point to a compatible signer), so replacing the demo logic with a real implementation only requires swapping in a different signer.
+
 ## App Implementation Notes
 
 - **Realm verification:** Enrollment starts when the app scans the QR code and reads `enrollmentToken`. Verify the JWT with the realm JWKS (`/realms/push-mfa/protocol/openid-connect/certs`) before trusting its contents.
 - **Device key material:** Generate a key pair per device, select a unique `kid`, and keep the private key in the device secure storage. Persist and exchange the public component exclusively as a JWK (the same document posted in `cnf.jwk`).
+- **Algorithm choice:** The demo scripts default to RSA/RS256 but also support EC keys and ECDSA proofs—set `DEVICE_KEY_TYPE=EC`, pick a curve via `DEVICE_EC_CURVE` (P-256/384/521), and override `DEVICE_SIGNING_ALG` if you need ES256/384/512. The selected algorithm is stored with the credential so Keycloak enforces it for all future DPoP proofs, login approvals, and rotation requests.
 - **State to store locally:** pseudonymous user id ↔ real Keycloak user id mapping, the device key pair, the `kid`, `deviceType`, `firebaseId`, preferred `deviceLabel`, and any metadata needed to post to Keycloak again.
 - **Confirm token handling:** When the confirm token arrives through Firebase (or when the user copies it from the waiting UI), decode the JWT, extract `cid` and `sub`, and either call `/login/pending` (optional) or immediately sign the login approval JWT and post it to `/login/challenges/{cid}/respond`.
 - **Pending challenge discovery:** Before calling `/login/pending`, build a DPoP proof that includes the HTTP method (`htm`), full URL (`htu`), `sub`, `deviceId`, `iat`, and a fresh `jti`, and send it via the `DPoP` header so Keycloak can scope the response to that physical device.
