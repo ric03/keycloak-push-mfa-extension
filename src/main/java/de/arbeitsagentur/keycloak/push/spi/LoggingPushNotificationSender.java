@@ -19,15 +19,17 @@ final class LoggingPushNotificationSender implements PushNotificationSender {
             String confirmToken,
             String pseudonymousUserId,
             String challengeId,
+            String pushProviderId,
             String clientId) {
         LOG.infof(
-                "Simulated push {realm=%s,user=%s,version=%d,type=%d,pseudonymousUserId=%s,challengeId=%s,clientId=%s}",
+                "Simulated push {realm=%s,user=%s,version=%d,type=%d,pseudonymousUserId=%s,challengeId=%s,pushProviderId=%s,clientId=%s}",
                 realm.getName(),
                 user.getUsername(),
                 PushMfaConstants.PUSH_MESSAGE_VERSION,
                 PushMfaConstants.PUSH_MESSAGE_TYPE,
                 pseudonymousUserId,
                 challengeId,
+                pushProviderId,
                 clientId);
         TokenLogHelper.logJwt("confirm-token", confirmToken);
     }

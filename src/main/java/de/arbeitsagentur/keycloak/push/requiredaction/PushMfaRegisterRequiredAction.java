@@ -8,35 +8,18 @@ import de.arbeitsagentur.keycloak.push.token.PushEnrollmentTokenBuilder;
 import de.arbeitsagentur.keycloak.push.util.PushMfaConstants;
 import jakarta.ws.rs.core.MultivaluedMap;
 import java.security.SecureRandom;
-import java.util.List;
-import org.keycloak.Config;
+import java.time.Duration;
 import org.keycloak.authentication.InitiatedActionSupport;
 import org.keycloak.authentication.RequiredActionContext;
-import org.keycloak.authentication.RequiredActionFactory;
 import org.keycloak.authentication.RequiredActionProvider;
 import org.keycloak.forms.login.LoginFormsProvider;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.RequiredActionConfigModel;
 import org.keycloak.models.utils.KeycloakModelUtils;
-import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.sessions.AuthenticationSessionModel;
 
-public class PushMfaRegisterRequiredAction implements RequiredActionProvider, RequiredActionFactory {
+public class PushMfaRegisterRequiredAction implements RequiredActionProvider {
 
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final String CONFIG_APP_URI_PREFIX = "appUriPrefix";
-
-    private String appUriPrefix = PushMfaConstants.PUSH_APP_URI_PREFIX;
-
-    @Override
-    public String getId() {
-        return PushMfaConstants.REQUIRED_ACTION_ID;
-    }
-
-    @Override
-    public String getDisplayText() {
-        return "Register Push MFA device";
-    }
 
     @Override
     public InitiatedActionSupport initiatedActionSupport() {
@@ -66,7 +49,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
         form.setAttribute("pushUsername", context.getUser().getUsername());
         form.setAttribute("enrollmentToken", enrollmentToken);
         form.setAttribute("qrPayload", enrollmentToken);
-        form.setAttribute("pushQrUri", buildPushUri(enrollmentToken));
+        form.setAttribute("pushQrUri", buildPushUri(resolveAppUriPrefix(context), enrollmentToken));
         form.setAttribute("enrollChallengeId", challenge.getId());
         form.setAttribute("pollingIntervalSeconds", 3);
         String eventsUrl = buildEnrollmentEventsUrl(context, challenge);
@@ -112,7 +95,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
             form.setAttribute("pushUsername", context.getUser().getUsername());
             form.setAttribute("enrollmentToken", enrollmentToken);
             form.setAttribute("qrPayload", enrollmentToken);
-            form.setAttribute("pushQrUri", buildPushUri(enrollmentToken));
+            form.setAttribute("pushQrUri", buildPushUri(resolveAppUriPrefix(context), enrollmentToken));
             form.setAttribute("enrollChallengeId", challenge.getId());
             form.setAttribute("pollingIntervalSeconds", 5);
             String eventsUrl = buildEnrollmentEventsUrl(context, challenge);
@@ -132,33 +115,12 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
         // no-op
     }
 
-    @Override
-    public RequiredActionProvider create(KeycloakSession session) {
-        return this;
-    }
-
-    @Override
-    public void init(Config.Scope config) {
-        if (config != null) {
-            appUriPrefix = config.get(CONFIG_APP_URI_PREFIX, PushMfaConstants.PUSH_APP_URI_PREFIX);
-        }
-    }
-
-    @Override
-    public void postInit(KeycloakSessionFactory factory) {
-        // no-op
-    }
-
-    @Override
-    public List<ProviderConfigProperty> getConfigMetadata() {
-        return List.of();
-    }
-
     private PushChallenge fetchOrCreateChallenge(
             RequiredActionContext context,
             AuthenticationSessionModel authSession,
             PushChallengeStore store,
             boolean forceNew) {
+        Duration challengeTtl = resolveEnrollmentTtl(context);
         PushChallenge challenge = null;
         if (!forceNew) {
             String existingId = authSession.getAuthNote(PushMfaConstants.ENROLL_CHALLENGE_NOTE);
@@ -182,7 +144,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
                     context.getUser().getId(),
                     nonceBytes,
                     PushChallenge.Type.ENROLLMENT,
-                    PushMfaConstants.CHALLENGE_TTL,
+                    challengeTtl,
                     null,
                     null,
                     watchSecret,
@@ -220,7 +182,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
         return ensured;
     }
 
-    private String buildPushUri(String enrollmentToken) {
+    private String buildPushUri(String appUriPrefix, String enrollmentToken) {
         if (appUriPrefix == null || appUriPrefix.isBlank()) {
             return enrollmentToken;
         }
@@ -244,5 +206,34 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider, Re
                 .queryParam("secret", watchSecret)
                 .build()
                 .toString();
+    }
+
+    private Duration resolveEnrollmentTtl(RequiredActionContext context) {
+        RequiredActionConfigModel config = context.getConfig();
+        if (config == null || config.getConfig() == null) {
+            return PushMfaConstants.DEFAULT_ENROLLMENT_CHALLENGE_TTL;
+        }
+        String value = config.getConfig().get(PushMfaConstants.ENROLLMENT_CHALLENGE_TTL_CONFIG);
+        if (value == null || value.isBlank()) {
+            return PushMfaConstants.DEFAULT_ENROLLMENT_CHALLENGE_TTL;
+        }
+        try {
+            long seconds = Long.parseLong(value.trim());
+            return seconds > 0 ? Duration.ofSeconds(seconds) : PushMfaConstants.DEFAULT_ENROLLMENT_CHALLENGE_TTL;
+        } catch (NumberFormatException ex) {
+            return PushMfaConstants.DEFAULT_ENROLLMENT_CHALLENGE_TTL;
+        }
+    }
+
+    private String resolveAppUriPrefix(RequiredActionContext context) {
+        RequiredActionConfigModel config = context.getConfig();
+        if (config == null || config.getConfig() == null) {
+            return PushMfaConstants.PUSH_APP_URI_PREFIX;
+        }
+        String value = config.getConfig().get(PushMfaRegisterRequiredActionFactory.CONFIG_APP_URI_PREFIX);
+        if (value == null || value.isBlank()) {
+            return PushMfaConstants.PUSH_APP_URI_PREFIX;
+        }
+        return value;
     }
 }

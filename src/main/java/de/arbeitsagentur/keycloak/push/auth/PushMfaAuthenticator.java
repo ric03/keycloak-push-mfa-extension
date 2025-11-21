@@ -11,6 +11,7 @@ import de.arbeitsagentur.keycloak.push.util.PushMfaConstants;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriBuilder;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import org.jboss.logging.Logger;
@@ -18,6 +19,8 @@ import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.credential.CredentialModel;
+import org.keycloak.models.AuthenticatorConfigModel;
+import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
@@ -32,6 +35,13 @@ public class PushMfaAuthenticator implements Authenticator {
     @Override
     public void authenticate(AuthenticationFlowContext context) {
         AuthenticationSessionModel authSession = context.getAuthenticationSession();
+        AuthenticatorConfigModel config = context.getAuthenticatorConfig();
+        Duration loginChallengeTtl = parseDurationSeconds(
+                config, PushMfaConstants.LOGIN_CHALLENGE_TTL_CONFIG, PushMfaConstants.DEFAULT_LOGIN_CHALLENGE_TTL);
+        int maxPendingChallenges = parsePositiveInt(
+                config,
+                PushMfaConstants.MAX_PENDING_AUTH_CHALLENGES_CONFIG,
+                PushMfaConstants.DEFAULT_MAX_PENDING_AUTH_CHALLENGES);
 
         List<CredentialModel> credentials = PushCredentialService.getActiveCredentials(context.getUser());
         if (credentials.isEmpty()) {
@@ -53,10 +63,10 @@ public class PushMfaAuthenticator implements Authenticator {
         PushChallengeStore challengeStore = new PushChallengeStore(context.getSession());
         int pendingChallenges = challengeStore.countPendingAuthentication(
                 context.getRealm().getId(), context.getUser().getId());
-        if (pendingChallenges >= PushMfaConstants.MAX_PENDING_AUTH_CHALLENGES) {
+        if (pendingChallenges >= maxPendingChallenges) {
             LOG.debugf(
-                    "User %s already has %d pending push challenges; refusing new one",
-                    context.getUser().getId(), pendingChallenges);
+                    "User %s already has %d pending push challenges (limit %d); refusing new one",
+                    context.getUser().getId(), pendingChallenges, maxPendingChallenges);
             context.failureChallenge(
                     AuthenticationFlowError.GENERIC_AUTHENTICATION_ERROR,
                     context.form()
@@ -66,9 +76,9 @@ public class PushMfaAuthenticator implements Authenticator {
         }
         byte[] challengeBytes = new byte[0];
 
-        String clientId = context.getAuthenticationSession().getClient() != null
-                ? context.getAuthenticationSession().getClient().getClientId()
-                : null;
+        ClientModel client = context.getAuthenticationSession().getClient();
+        String clientId = client != null ? client.getClientId() : null;
+        String clientDisplayName = extractClientDisplayName(client);
 
         String rootSessionId = context.getAuthenticationSession().getParentSession() != null
                 ? context.getAuthenticationSession().getParentSession().getId()
@@ -80,7 +90,7 @@ public class PushMfaAuthenticator implements Authenticator {
                 context.getUser().getId(),
                 challengeBytes,
                 PushChallenge.Type.AUTHENTICATION,
-                PushMfaConstants.CHALLENGE_TTL,
+                loginChallengeTtl,
                 credential.getId(),
                 clientId,
                 watchSecret,
@@ -96,7 +106,8 @@ public class PushMfaAuthenticator implements Authenticator {
                 pushChallenge.getId(),
                 pushChallenge.getExpiresAt(),
                 context.getUriInfo().getBaseUri(),
-                clientId);
+                clientId,
+                clientDisplayName);
 
         LOG.debugf(
                 "Push message prepared {version=%d,type=%d,pseudonymousUserId=%s}",
@@ -108,11 +119,12 @@ public class PushMfaAuthenticator implements Authenticator {
                 context.getSession(),
                 context.getRealm(),
                 context.getUser(),
+                clientId,
                 confirmToken,
                 credentialData.getPseudonymousUserId(),
                 pushChallenge.getId(),
-                clientId,
-                credentialData.getPushProviderType());
+                credentialData.getPushProviderType(),
+                credentialData.getPushProviderId());
         showWaitingForm(context, pushChallenge, credentialData, confirmToken);
     }
 
@@ -175,9 +187,7 @@ public class PushMfaAuthenticator implements Authenticator {
                 PushCredentialData credentialData =
                         credentialModel == null ? null : PushCredentialService.readCredentialData(credentialModel);
                 String clientId = current.getClientId();
-                if (clientId == null && context.getAuthenticationSession().getClient() != null) {
-                    clientId = context.getAuthenticationSession().getClient().getClientId();
-                }
+                String clientDisplayName = resolveClientDisplayName(context, clientId);
                 String confirmToken = (credentialModel == null
                                 || credentialData == null
                                 || credentialData.getPseudonymousUserId() == null)
@@ -189,7 +199,8 @@ public class PushMfaAuthenticator implements Authenticator {
                                 current.getId(),
                                 current.getExpiresAt(),
                                 context.getUriInfo().getBaseUri(),
-                                clientId);
+                                clientId,
+                                clientDisplayName);
 
                 showWaitingForm(context, current, credentialData, confirmToken);
             }
@@ -292,5 +303,53 @@ public class PushMfaAuthenticator implements Authenticator {
                 .path("events")
                 .queryParam("secret", watchSecret);
         return builder.build().toString();
+    }
+
+    private String resolveClientDisplayName(AuthenticationFlowContext context, String clientId) {
+        if (clientId == null) {
+            return null;
+        }
+        ClientModel byClientId = context.getSession().clients().getClientByClientId(context.getRealm(), clientId);
+        return extractClientDisplayName(byClientId);
+    }
+
+    private String extractClientDisplayName(ClientModel client) {
+        if (client == null) {
+            return null;
+        }
+        String name = client.getName();
+        return (name == null || name.isBlank()) ? null : name;
+    }
+
+    private Duration parseDurationSeconds(AuthenticatorConfigModel config, String key, Duration defaultValue) {
+        if (config == null || config.getConfig() == null) {
+            return defaultValue;
+        }
+        String value = config.getConfig().get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            long seconds = Long.parseLong(value.trim());
+            return seconds > 0 ? Duration.ofSeconds(seconds) : defaultValue;
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
+    }
+
+    private int parsePositiveInt(AuthenticatorConfigModel config, String key, int defaultValue) {
+        if (config == null || config.getConfig() == null) {
+            return defaultValue;
+        }
+        String value = config.getConfig().get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : defaultValue;
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
     }
 }

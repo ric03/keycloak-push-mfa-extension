@@ -17,11 +17,12 @@ public final class PushNotificationService {
             KeycloakSession session,
             RealmModel realm,
             UserModel user,
+            String clientId,
             String confirmToken,
             String pseudonymousUserId,
             String challengeId,
-            String clientId,
-            String pushProviderType) {
+            String pushProviderType,
+            String pushProviderId) {
         String providerType = (pushProviderType == null || pushProviderType.isBlank())
                 ? PushMfaConstants.DEFAULT_PUSH_PROVIDER_TYPE
                 : pushProviderType;
@@ -33,6 +34,6 @@ public final class PushNotificationService {
             LOG.warnf("No PushNotificationSender provider available for type %s", providerType);
             return;
         }
-        sender.send(session, realm, user, confirmToken, pseudonymousUserId, challengeId, clientId);
+        sender.send(session, realm, user, confirmToken, pseudonymousUserId, challengeId, pushProviderId, clientId);
     }
 }

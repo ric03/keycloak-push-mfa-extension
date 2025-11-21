@@ -17,5 +17,6 @@ public interface PushNotificationSender extends Provider {
             String confirmToken,
             String pseudonymousUserId,
             String challengeId,
+            String pushProviderId,
             String clientId);
 }
