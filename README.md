@@ -142,7 +142,7 @@ sequenceDiagram
 
 4. **Login approval:** The device looks up the confirm token’s `sub` (credential id), resolves it to the real Keycloak user id in its secure storage, and signs a JWT (`loginToken`) with the same key pair from enrollment. The payload echoes the challenge id (`cid`), the `credId`, and the desired `action` (`approve`/`deny`) so Keycloak can fully trust the intent because it is covered by the user key signature (no nonce is needed because possession of the key already proves authenticity, and `cid` is unguessable).
 
-   ```json
+  ```json
   {
      "_comment": "login approval payload (device -> realm)",
       "cid": "1a6d6a0b-3385-4772-8eb8-0d2f4dbd25a4",
