@@ -7,8 +7,10 @@ import de.arbeitsagentur.keycloak.push.credential.PushCredentialService;
 import de.arbeitsagentur.keycloak.push.token.PushEnrollmentTokenBuilder;
 import de.arbeitsagentur.keycloak.push.util.PushMfaConstants;
 import jakarta.ws.rs.core.MultivaluedMap;
+import java.net.URISyntaxException;
 import java.security.SecureRandom;
 import java.time.Duration;
+import org.apache.http.client.utils.URIBuilder;
 import org.keycloak.authentication.InitiatedActionSupport;
 import org.keycloak.authentication.RequiredActionContext;
 import org.keycloak.authentication.RequiredActionProvider;
@@ -49,7 +51,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider {
         form.setAttribute("pushUsername", context.getUser().getUsername());
         form.setAttribute("enrollmentToken", enrollmentToken);
         form.setAttribute("qrPayload", enrollmentToken);
-        form.setAttribute("pushQrUri", buildPushUri(resolveAppUriPrefix(context), enrollmentToken));
+        form.setAttribute("pushQrUri", buildPushUri(resolveAppUniversalLink(context), enrollmentToken));
         form.setAttribute("enrollChallengeId", challenge.getId());
         form.setAttribute("pollingIntervalSeconds", 3);
         String eventsUrl = buildEnrollmentEventsUrl(context, challenge);
@@ -95,7 +97,7 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider {
             form.setAttribute("pushUsername", context.getUser().getUsername());
             form.setAttribute("enrollmentToken", enrollmentToken);
             form.setAttribute("qrPayload", enrollmentToken);
-            form.setAttribute("pushQrUri", buildPushUri(resolveAppUriPrefix(context), enrollmentToken));
+            form.setAttribute("pushQrUri", buildPushUri(resolveAppUniversalLink(context), enrollmentToken));
             form.setAttribute("enrollChallengeId", challenge.getId());
             form.setAttribute("pollingIntervalSeconds", 5);
             String eventsUrl = buildEnrollmentEventsUrl(context, challenge);
@@ -182,11 +184,18 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider {
         return ensured;
     }
 
-    private String buildPushUri(String appUriPrefix, String enrollmentToken) {
-        if (appUriPrefix == null || appUriPrefix.isBlank()) {
+    private String buildPushUri(String appUniversalLink, String enrollmentToken) {
+        if (appUniversalLink == null || appUniversalLink.isBlank()) {
             return enrollmentToken;
         }
-        return appUriPrefix + enrollmentToken;
+        try {
+            URIBuilder uriBuilder = new URIBuilder(appUniversalLink);
+            uriBuilder.addParameter("token", enrollmentToken);
+            return uriBuilder.toString();
+        } catch (URISyntaxException e) {
+            // noop - fallback to just the token
+        }
+        return enrollmentToken;
     }
 
     private String buildEnrollmentEventsUrl(RequiredActionContext context, PushChallenge challenge) {
@@ -225,14 +234,14 @@ public class PushMfaRegisterRequiredAction implements RequiredActionProvider {
         }
     }
 
-    private String resolveAppUriPrefix(RequiredActionContext context) {
+    private String resolveAppUniversalLink(RequiredActionContext context) {
         RequiredActionConfigModel config = context.getConfig();
         if (config == null || config.getConfig() == null) {
-            return PushMfaConstants.PUSH_APP_URI_PREFIX;
+            return PushMfaConstants.DEFAULT_APP_UNIVERSAL_LINK + "enroll";
         }
-        String value = config.getConfig().get(PushMfaRegisterRequiredActionFactory.CONFIG_APP_URI_PREFIX);
+        String value = config.getConfig().get(PushMfaConstants.APP_UNIVERSAL_LINK_CONFIG);
         if (value == null || value.isBlank()) {
-            return PushMfaConstants.PUSH_APP_URI_PREFIX;
+            return PushMfaConstants.DEFAULT_APP_UNIVERSAL_LINK + "enroll";
         }
         return value;
     }
