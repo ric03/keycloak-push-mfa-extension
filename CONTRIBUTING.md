@@ -51,13 +51,17 @@ Please ensure all tests pass locally before opening a PR.
 
 ## Commit Messages and Releases
 
-This repository uses Conventional Commits. Please format your commit messages like:
+This repository uses Conventional Commits (https://www.conventionalcommits.org/).
+
+Please format your commit messages like:
 
 ```
 <type>(optional scope): short description
 
 [optional body]
 [optional footer(s)]
+
+Signed-off-by: Max Mustermann <max-mustermann@example.org>
 ```
 
 Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`.
@@ -67,6 +71,31 @@ Examples:
 - `fix(spi): prevent NPE when no push provider configured`
 
 Releases and changelogs are managed by release-please via GitHub Actions. Do not bump versions or edit CHANGELOG manually; use proper Conventional Commits and the bot will propose release PRs.
+
+## Signed commits (Developer Certificate of Origins)
+
+Each commit must be signed-off.
+
+
+https://github.com/dcoapp/app
+
+## Developer Certificate of Origin
+
+We have adopted a Developers Certificate of Origin (DCO).
+A DCO is a lightweight way for a developer to certify that they wrote or otherwise have the right to submit code or documentation to a project.
+To certify the code you submit to the repository, you'll need to add a Signed-off-by line to your commits.
+
+```shell
+$ git commit -s -m 'Awesome commit message'
+```
+
+Which will look something like the following in the repo:
+
+```
+Awesome commit message
+
+Signed-off-by: Jane Smith <jane.smith@example.com>
+```
 
 ## Pull Request Guidelines
 
